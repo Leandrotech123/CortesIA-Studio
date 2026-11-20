@@ -1,0 +1,18 @@
+{
+  "nome": "Meu Canal Games",
+  "handle": "@meucanal",
+  "fundo": "#0B0D12",
+  "secundaria": "#131B2E",
+  "primaria": "#FF6B00",
+  "destaque": "#FFE600",
+  "texto": "#FFFFFF",
+  "contorno": "#000000",
+  "titulo_fonte": "BebasNeue-Regular.ttf",
+  "legenda_fonte": "Montserrat-ExtraBold.ttf",
+  "zona_segura": [
+    70,
+    240,
+    940,
+    1420
+  ]
+}

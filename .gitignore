@@ -1,0 +1,16 @@
+**/node_modules/
+**/.venv/
+cache/
+tmp/
+logs/
+.studio/
+trabalho/
+entrada/
+publicacoes/
+.env
+.env.*
+
+__pycache__/
+.remotion/
+
+.venv-voz/

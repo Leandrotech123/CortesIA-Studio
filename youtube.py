@@ -1,4 +1,5 @@
 """Importação manual de um único vídeo do YouTube para a fila local."""
+import json
 from pathlib import Path
 import shutil
 import re
@@ -33,19 +34,31 @@ def normalizar(link):
 
 
 def baixar(link, pasta):
-    pasta.mkdir(parents=True, exist_ok=False)
-    destino = pasta / 'fonte.%(ext)s'
-    args = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-playlist',
-            '--quiet', '--no-warnings', '--socket-timeout', '20', '--retries', '2',
-            '--match-filters', '!is_live & duration <= 14400',
-            '--max-filesize', '10G', '-f', 'bv[height<=1080]+ba/b[height<=1080]',
-            '--merge-output-format', 'mkv', '-o', str(destino), '--', normalizar(link)]
+    url = normalizar(link)
+    base = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-playlist',
+            '--socket-timeout', '20', '--retries', '2']
     node = shutil.which('node')
     if not node:
         node = next((str(p) for p in sorted(Path.home().glob('.nvm/versions/node/*/bin/node'), reverse=True)
                      if p.is_file()), None)
     if node:
-        args[3:3] = ['--js-runtimes', f'node:{node}']
+        base += ['--js-runtimes', f'node:{node}']
+    consulta = subprocess.run([*base, '--skip-download', '--dump-single-json', '--', url],
+                             capture_output=True, text=True, timeout=120)
+    if consulta.returncode:
+        raise ValueError('O YouTube não disponibilizou o vídeo. Confira o link ou envie o arquivo original.')
+    dados = json.loads(consulta.stdout)
+    if dados.get('live_status') in ('is_live', 'is_upcoming'):
+        raise ValueError('Esta transmissão ainda está ao vivo ou agendada. Use o mesmo link depois que o YouTube disponibilizar a gravação.')
+    if dados.get('live_status') == 'post_live':
+        raise ValueError('O YouTube ainda está processando a gravação da live. Tente novamente quando ela estiver disponível.')
+    duracao = dados.get('duration')
+    if duracao is not None and duracao > 14400:
+        raise ValueError('O vídeo tem mais de 4 horas. Envie um trecho menor como arquivo.')
+    pasta.mkdir(parents=True, exist_ok=False)
+    args = [*base, '--quiet', '--no-warnings', '--match-filters', '!is_live & duration <= 14400',
+            '--max-filesize', '10G', '-f', 'bv[height<=1080]+ba/b[height<=1080]',
+            '--merge-output-format', 'mkv', '-o', str(pasta / 'fonte.%(ext)s'), '--', url]
     result = subprocess.run(args, capture_output=True, text=True, timeout=3600)
     arquivos = [p for p in pasta.glob('fonte.*') if p.suffix in ('.mkv', '.mp4', '.webm')]
     if result.returncode or len(arquivos) != 1:

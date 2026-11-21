@@ -20,7 +20,7 @@ em https://github.com/yt-dlp/yt-dlp/wiki/EJS se o extrator solicitar esse compon
 
 Envie um MP4 ou MKV, ou informe um link de vídeo do YouTube que você pode baixar e editar.
 Se o serviço bloquear a importação, envie o arquivo original. Em Games, a fila produz
-os cortes com capas, legendas e textos. Após revisar, selecione as redes e aprove os
+cortes de 1min30s a 2min com capas, legendas e textos. Após revisar, selecione as redes e aprove os
 arquivos para download. Para usar sua marca, ajuste `assets/marcas/games.json` antes
 da primeira execução. A publicação nas redes é manual.
 

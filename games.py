@@ -16,6 +16,7 @@ from cortes import ROOT, SINAIS_GAMES, ffmpeg, gravar, legendas, tempo
 MARCA = ROOT / 'assets/marcas'
 FONTES = ROOT / 'assets/fonts'
 logger = logging.getLogger(__name__)
+MINIMO, MAXIMO = 90, 120
 
 
 def gerar_assets(marca):
@@ -76,7 +77,7 @@ def tokens(texto):
     return set(re.findall(r'\w{3,}', texto.lower()))
 
 
-def selecionar(frases, sinais, duracao, brief, quantidade):
+def selecionar(frases, sinais, duracao, brief, quantidade, excluir=()):
     palavras = [w for frase in frases for w in frase]
     instantes = [w['inicio'] for w in palavras]
     inicios = [-.3] + [f[0]['inicio'] for f in frases]
@@ -84,13 +85,13 @@ def selecionar(frases, sinais, duracao, brief, quantidade):
     termos = tokens(brief)
     candidatos = []
     # Cada janela é pontuada por fala e por sinais observáveis de imagem e som.
-    for base in range(0, max(1, int(duracao - 35) + 1), 5):
-        a = min(float(base), duracao - 35)
+    for base in range(0, max(1, int(duracao - MINIMO) + 1), 5):
+        a = min(float(base), duracao - MINIMO)
         pos = bisect_left(inicios, a + .3)
         if pos < len(inicios) and inicios[pos] - a <= 5:
-            a = max(0, min(duracao - 35, inicios[pos] - .3))
-        pos = bisect_right(finais, min(a + 57.6, duracao - .4))
-        b = finais[pos - 1] + .4 if pos and finais[pos - 1] + .4 >= a + 35 else min(duracao, a + 46)
+            a = max(0, min(duracao - MINIMO, inicios[pos] - .3))
+        pos = bisect_right(finais, min(a + MAXIMO - .4, duracao - .4))
+        b = finais[pos - 1] + .4 if pos and finais[pos - 1] + .4 >= a + MINIMO else min(duracao, a + 105)
         trecho = palavras[bisect_left(instantes, a):bisect_left(instantes, b)]
         trecho = [w for w in trecho if w['fim'] <= b]
         encontrados = tokens(' '.join(w['texto'] for w in trecho))
@@ -103,7 +104,7 @@ def selecionar(frases, sinais, duracao, brief, quantidade):
             movimento=round(float(visual), 2), energia=round(float(energia), 2)))
     cortes = []
     for c in sorted(candidatos, key=lambda c: -c['pontuacao']):
-        if all(c['fim'] <= x['inicio'] or c['inicio'] >= x['fim'] for x in cortes):
+        if all(c['fim'] <= x['inicio'] or c['inicio'] >= x['fim'] for x in (*excluir, *cortes)):
             cortes.append(c)
             if len(cortes) == quantidade:
                 break
@@ -184,7 +185,7 @@ def renderizar(video, pasta, marca, corte, numero, creditos, tem_audio, marca_da
     gravar(pasta / (nome + '_meta.json'), dict(corte=corte, creditos=creditos, redes=textos))
 
 
-def processar(video, brief, quantidade, progresso=print, origem=None):
+def processar(video, brief, quantidade, progresso=print, origem=None, anterior=None, pronto=None):
     from faster_whisper import WhisperModel
     import shutil
 
@@ -196,8 +197,8 @@ def processar(video, brief, quantidade, progresso=print, origem=None):
     if not any(s['codec_type'] == 'video' for s in probe['streams']):
         raise ValueError('O arquivo não tem vídeo.')
     duracao = float(probe['format']['duration'])
-    if duracao < 35:
-        raise ValueError('O modo Games precisa de pelo menos 35 segundos.')
+    if duracao < MINIMO:
+        raise ValueError('O modo Games precisa de pelo menos 1min30s de gravação.')
     tem_audio = any(s['codec_type'] == 'audio' for s in probe['streams'])
     marca = json.loads((MARCA / 'games.json').read_text(encoding='utf-8'))
     marca_dagua = gerar_assets(marca)
@@ -215,18 +216,34 @@ def processar(video, brief, quantidade, progresso=print, origem=None):
         audio = pasta / 'audio.wav' if tem_audio else None
         frases = []
         if audio:
-            progresso('Extraindo áudio e transcrevendo localmente.')
+            progresso('Extraindo áudio localmente.')
             ffmpeg('-i', video, '-map', '0:a:0', '-ac', 1, '-ar', 16000, audio)
-            modelo = WhisperModel(str(ROOT / 'cache/models/small'), device='cpu',
-                                  compute_type='int8', cpu_threads=4, local_files_only=True)
-            segmentos, _ = modelo.transcribe(str(audio), word_timestamps=True, vad_filter=True)
-            for segmento in segmentos:
-                fala = [dict(inicio=w.start, fim=w.end, texto=w.word.strip())
-                        for w in segmento.words or [] if w.end > w.start and w.word.strip()]
-                if fala:
-                    frases.append(fala)
+            if anterior is not None:
+                progresso('Reaproveitando a transcrição da gravação.')
+                palavras = json.loads((anterior / 'palavras.json').read_text(encoding='utf-8'))
+                for palavra in palavras:
+                    if not frases or frases[-1][-1]['texto'].endswith(('.', '?', '!')) or (
+                            palavra['inicio'] - frases[-1][-1]['fim'] > .5):
+                        frases.append([])
+                    frases[-1].append(palavra)
+            else:
+                progresso('Transcrevendo localmente.')
+                modelo = WhisperModel(str(ROOT / 'cache/models/small'), device='cpu',
+                                      compute_type='int8', cpu_threads=4, local_files_only=True)
+                segmentos, _ = modelo.transcribe(str(audio), word_timestamps=True, vad_filter=True)
+                for segmento in segmentos:
+                    fala = [dict(inicio=w.start, fim=w.end, texto=w.word.strip())
+                            for w in segmento.words or [] if w.end > w.start and w.word.strip()]
+                    if fala:
+                        frases.append(fala)
         progresso('Medindo movimento e energia para selecionar os melhores trechos.')
-        cortes = selecionar(frases, medir(video, duracao, audio), duracao, brief, quantidade)
+        excluir = ()
+        if anterior is not None:
+            plano_anterior = json.loads((anterior / 'plano.json').read_text(encoding='utf-8'))
+            if plano_anterior['video'] != str(video.relative_to(ROOT)):
+                raise ValueError('A transcrição anterior pertence a outro vídeo.')
+            excluir = plano_anterior['cortes']
+        cortes = selecionar(frases, medir(video, duracao, audio), duracao, brief, quantidade, excluir)
         creditos = f'Gravação própria via OBS Studio · {marca["handle"]}'
         if origem:
             creditos = f'Fonte autorizada para edição · {origem}'
@@ -241,6 +258,8 @@ def processar(video, brief, quantidade, progresso=print, origem=None):
                     for arquivo in Path(trecho).iterdir():
                         shutil.move(str(arquivo), destino / arquivo.name)
                 arquivos.append(str((destino / f'corte_{numero:02d}.mp4').relative_to(ROOT)))
+                if pronto:
+                    pronto(arquivos[-1])
             except (ValueError, OSError, subprocess.CalledProcessError):
                 logger.exception('Falha em %s, corte %s', video.name, numero)
                 falhas.append(numero)

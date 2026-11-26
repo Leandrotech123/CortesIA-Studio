@@ -128,9 +128,18 @@ def renderizar(video, pasta, marca, corte, numero, creditos, tem_audio, watermar
               '100,100,0,0,1,0,0,7,98,0,0,1\n')
     conteudo = re.sub(r'^Style: Default,.*\n', estilo, conteudo, flags=re.M)
     conteudo = conteudo.replace('&H93FF49&', ass_color(marca['destaque']))
-    conteudo += f'Dialogue: 1,0:00:00.00,0:00:04.00,Hook,,0,0,0,,{{\\pos(98,270)}}{gancho}\n'
+    primeira, _, resto = gancho.partition(' ')
+    destaque_ass = ass_color(marca['destaque'])[4:]
+    gancho_ass = r'{\c&H' + destaque_ass + '&}' + primeira + r'{\c&HFFFFFF&}' + (' ' + resto if resto else '')
+    conteudo += f'Dialogue: 1,0:00:00.00,0:00:04.00,Hook,,0,0,0,,{{\\pos(98,270)}}{gancho_ass}\n'
     ass.write_text(conteudo, encoding='utf-8')
-    shutil.copyfile(watermark, pasta / 'marca.png')
+    from PIL import Image, ImageDraw
+    overlay = Image.new('RGBA', (1080, 1920))
+    ImageDraw.Draw(overlay).rounded_rectangle((18, 478, 1061, 1441),
+        radius=18, outline=marca['destaque'], width=2)
+    with Image.open(watermark) as selo:
+        overlay.alpha_composite(selo.convert('RGBA'), (610, 385))
+    overlay.save(pasta / 'marca.png')
     (pasta / 'fonts').symlink_to(FONTES, target_is_directory=True)
     fundo = marca['fundo'].replace('#','0x')
     secundaria = marca['secundaria'].replace('#','0x')
@@ -142,10 +151,9 @@ def renderizar(video, pasta, marca, corte, numero, creditos, tem_audio, watermar
         '[0:v]fps=60,scale=1040:960:force_original_aspect_ratio=decrease,'
         f'pad=1040:960:(ow-iw)/2:(oh-ih)/2:color={secundaria},setsar=1[screen];'
         '[bg][screen]overlay=20:480[layout];'
-        f'[layout]drawbox=x=18:y=478:w=1044:h=964:color={destaque}:t=2,'
-        f"drawbox=x=70:y=250:w=870:h=116:color={secundaria}@0.92:t=fill:enable='lt(t,4)',"
+        f"[layout]drawbox=x=70:y=250:w=870:h=116:color={secundaria}@0.92:t=fill:enable='lt(t,4)',"
         f"drawbox=x=70:y=250:w=7:h=116:color={primaria}:t=fill:enable='lt(t,4)'[card];"
-        '[card][1:v]overlay=610:385[brand];'
+        '[card][1:v]overlay=0:0[brand];'
         '[brand]ass=legendas.ass:fontsdir=fonts,'
         f'drawbox=x=70:y=1410:w=870:h=4:color={primaria}:t=fill[base];'
         f'color=c={destaque}:s=870x4:r=60[bar];'

@@ -1,0 +1,20 @@
+{
+  "nome": "Meu Canal Tech",
+  "handle": "@meucanaltech",
+  "fundo": "#0B0D12",
+  "secundaria": "#0A1F44",
+  "primaria": "#FF6B00",
+  "destaque": "#00E5FF",
+  "texto": "#FFFFFF",
+  "contorno": "#000000",
+  "titulo_fonte": "BebasNeue-Regular.ttf",
+  "legenda_fonte": "Montserrat-ExtraBold.ttf",
+  "zona_segura": [
+    70,
+    240,
+    940,
+    1420
+  ],
+  "asset_prefix": "marca_tech",
+  "monograma": "IA"
+}

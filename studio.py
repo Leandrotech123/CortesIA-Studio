@@ -15,6 +15,7 @@ from youtube import baixar, normalizar
 
 from cortes import CANAIS, ROOT
 from games import processar as processar_games
+from tech import processar as processar_tech
 from entrega_games import entregar as entregar_games
 
 STATE = ROOT / '.studio'
@@ -27,7 +28,7 @@ PAGE = r'''<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="v
 :root{font:16px system-ui;color:#eee;background:#10131a}body{max-width:1050px;margin:35px auto;padding:0 18px}h1{font-size:2rem}p{color:#b8c0cf}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.card{background:#1a202b;border:1px solid #303949;border-radius:14px;padding:20px;margin:16px 0}label{display:block;margin:12px 0 5px}input,textarea,select,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #465267;background:#121722;color:#fff;width:100%;box-sizing:border-box}textarea{min-height:100px}button{background:#61d6b0;color:#10211c;font-weight:700;cursor:pointer;margin-top:12px}.job{border-top:1px solid #394253;padding:14px 0}.candidate{background:#121722;padding:12px;border-radius:8px;margin:8px 0}.small{font-size:.86rem;color:#b8c0cf}a{color:#74dcbc}@media(max-width:700px){.grid{grid-template-columns:1fr}}
 </style><body><h1>CortesIA Studio</h1><p>Seu espaço local para enviar gravações, guardar referências e preparar cortes revisáveis. Os arquivos ficam neste computador.</p>
 <div class="grid"><section class="card"><h2>Novo vídeo</h2><label>Link de um vídeo do YouTube</label><input id="youtube" type="url" placeholder="https://www.youtube.com/watch?v=…"><label><input id="youtubePermitido" type="checkbox" style="width:auto"> Posso baixar e editar este vídeo</label><label>Ou envie o arquivo gravado</label><input id="video" type="file" accept="video/*"><label>Vídeo ou imagem de referência (opcional)</label><input id="reference" type="file" accept="video/*,image/*,.pdf,.txt"><label>Canal</label><select id="channel"><option value="games">Games</option><option value="ia">IA</option><option value="tecnologia">Tecnologia</option></select><label>Referências, pauta e instruções</label><textarea id="brief" placeholder="Cole links e descreva ritmo, estilo, temas, público, idioma e o que evitar. Separe fatos e opinião."></textarea><label>Quantidade de sugestões</label><select id="quantity"><option>3</option><option>5</option><option>8</option><option>10</option></select><button onclick="startJob()">Enviar e analisar</button><div id="message" class="small"></div></section>
-<section class="card"><h2>Como usar referências</h2><p>O arquivo de referência fica separado do vídeo que será cortado e não é publicado nem usado como fonte automática de fatos. Descreva no brief o estilo que quer aproveitar. O sistema usa os termos escritos para ordenar sugestões.</p><p>Envie somente gravações suas ou com autorização. Antes de publicar, confira cortes, legendas, créditos e regras da plataforma.</p><p>Em Games, o Studio analisa a gravação própria e exporta automaticamente trechos de 1min30s a 2min, com arquivos e textos para postar. Confira as prévias antes de publicar nas redes.</p><p>Para gravações longas, mantenha o computador ligado e aguarde a análise local terminar.</p></section></div>
+<section class="card"><h2>Como usar referências</h2><p>O arquivo de referência fica separado do vídeo que será cortado e não é publicado nem usado como fonte automática de fatos. Descreva no brief o estilo que quer aproveitar. O sistema usa os termos escritos para ordenar sugestões.</p><p>Envie somente gravações suas ou com autorização. Antes de publicar, confira cortes, legendas, créditos e regras da plataforma.</p><p>Em Games, o Studio analisa a gravação própria e exporta automaticamente trechos de 1min30s a 2min, com arquivos e textos para postar. Confira as prévias antes de publicar nas redes.</p><p>Em IA e Tecnologia, o Studio exporta explicações de 35 a 58 segundos mantendo a tela inteira, com identidade da marca configurada. Revise as prévias e aprove por rede.</p><p>Para gravações longas, mantenha o computador ligado e aguarde a análise local terminar.</p></section></div>
 <section class="card"><h2>Trabalhos e cortes</h2><div id="jobs">Carregando…</div></section>
 <script>
 async function startJob(){
@@ -56,7 +57,7 @@ async function startJob(){
   }catch(error){msg.textContent=error.message}
 }
 async function render(video,corte,channel){let slug=prompt('Nome curto do corte (ex.: gta-vi-momento-1)');if(!slug)return;let credits=prompt('Créditos e autorização/origem:','Gravação própria');if(credits===null)return;let r=await fetch('/api/render',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({video,corte,channel,slug,credits})});let d=await r.json();if(r.ok){alert('Prévia pronta. Vou abrir o vídeo para revisão.');window.open('/media/'+encodeURIComponent(d.video),'_blank')}else alert(d.error);refresh()}
-let snapshot=''; async function refresh(forcar=false){if(!forcar && document.querySelector('.candidate[open]'))return;let r=await fetch('/api/jobs');let d=await r.json();const atual=JSON.stringify(d);if(!forcar && atual===snapshot)return;snapshot=atual;const abertas=forcar?[...document.querySelectorAll('details[open] form')].map(f=>f.dataset.corte):[];document.querySelector('#jobs').innerHTML=d.jobs.length?d.jobs.map(j=>`<div class="job"><b>${esc(j.youtube||j.video)}</b> · ${esc(j.status)}<div class="small">${esc(j.message||'')}</div>${(j.arquivos||[]).map((f,i)=>painelCorte(j,f,i)).join('')}${j.reference?`<p class="small">Referência salva: <a href="/files/${encodeURIComponent(j.reference)}">${esc(j.reference)}</a></p>`:''}${j.brief?`<p class="small">Brief: ${esc(j.brief)}</p>`:''}${(j.channel==="games"?[]:j.cuts||[]).map((c,i)=>`<div class="candidate"><b>Sugestão ${i+1}</b> · ${Math.round(c.inicio)}s–${Math.round(c.fim)}s · score ${c.pontuacao}<p>${esc(c.palavras.map(w=>w.texto).join(' '))}</p><span class="small">Temas do brief: ${esc((c.temas_encontrados||[]).join(', ')||'nenhum termo literal')} · Pistas de gameplay: ${esc((c.sinais_games||[]).join(', ')||'nenhuma')}</span><button onclick="render('${esc(j.video)}',${i+1},'${esc(j.channel)}')">Gerar prévia deste corte</button></div>`).join('')}${j.transcript?`<p><a href="/files/${encodeURIComponent(j.transcript)}">Baixar transcrição completa</a> · <a href="/files/${encodeURIComponent(j.srt)}">Baixar transcrição (.srt)</a></p>`:''}</div>`).join(''):'Nenhum trabalho ainda.';document.querySelectorAll('details form').forEach(f=>{if(abertas.includes(f.dataset.corte))f.closest('details').open=true})}
+let snapshot=''; async function refresh(forcar=false){if(!forcar && document.querySelector('.candidate[open]'))return;let r=await fetch('/api/jobs');let d=await r.json();const atual=JSON.stringify(d);if(!forcar && atual===snapshot)return;snapshot=atual;const abertas=forcar?[...document.querySelectorAll('details[open] form')].map(f=>f.dataset.corte):[];document.querySelector('#jobs').innerHTML=d.jobs.length?d.jobs.map(j=>`<div class="job"><b>${esc(j.youtube||j.video)}</b> · ${esc(j.status)}<div class="small">${esc(j.message||'')}</div>${(j.arquivos||[]).map((f,i)=>painelCorte(j,f,i)).join('')}${j.reference?`<p class="small">Referência salva: <a href="/files/${encodeURIComponent(j.reference)}">${esc(j.reference)}</a></p>`:''}${j.brief?`<p class="small">Brief: ${esc(j.brief)}</p>`:''}${[].map((c,i)=>`<div class="candidate"><b>Sugestão ${i+1}</b> · ${Math.round(c.inicio)}s–${Math.round(c.fim)}s · score ${c.pontuacao}<p>${esc(c.palavras.map(w=>w.texto).join(' '))}</p><span class="small">Temas do brief: ${esc((c.temas_encontrados||[]).join(', ')||'nenhum termo literal')} · Pistas de gameplay: ${esc((c.sinais_games||[]).join(', ')||'nenhuma')}</span><button onclick="render('${esc(j.video)}',${i+1},'${esc(j.channel)}')">Gerar prévia deste corte</button></div>`).join('')}${j.transcript?`<p><a href="/files/${encodeURIComponent(j.transcript)}">Baixar transcrição completa</a> · <a href="/files/${encodeURIComponent(j.srt)}">Baixar transcrição (.srt)</a></p>`:''}</div>`).join(''):'Nenhum trabalho ainda.';document.querySelectorAll('details form').forEach(f=>{if(abertas.includes(f.dataset.corte))f.closest('details').open=true})}
 const redes = {instagram:'Instagram Reels',youtube:'YouTube Shorts',tiktok:'TikTok'};
 const media = p => '/media/' + encodeURIComponent(p);
 const arquivo = p => '/files/' + encodeURIComponent(p);
@@ -134,22 +135,16 @@ def run_analysis(record, path, brief_path, channel, quantity, origem=None):
             logging.exception('Falha no processamento Games')
             update(record, status='Falhou', message=str(error))
         return
-    cmd = [sys.executable, str(ROOT / 'cortes.py'), 'analisar', str(path), '--canal', channel,
-           '--quantidade', str(quantity)]
-    if brief_path.exists():
-        cmd += ['--brief', str(brief_path)]
-    log = record.with_suffix('.log')
-    with log.open('w', encoding='utf-8') as out:
-        result = subprocess.run(cmd, cwd=ROOT, stdout=out, stderr=subprocess.STDOUT)
-    if result.returncode:
-        detail = log.read_text(encoding='utf-8', errors='replace')[-1600:]
-        update(record, status='Falhou', message=detail)
-        return
-    plan = ROOT / 'trabalho' / channel / f'{path.stem}.json'
-    data = json.loads(plan.read_text(encoding='utf-8'))
-    update(record, status='Pronto para revisão', message='Confira as sugestões e a transcrição antes de publicar.',
-           plan=str(plan.relative_to(ROOT)), transcript=str(plan.with_suffix('.txt').relative_to(ROOT)),
-           srt=str(plan.with_suffix('.srt').relative_to(ROOT)), cuts=data['cortes'])
+    try:
+        resultado = processar_tech(
+            path, brief_path.read_text(encoding='utf-8'), quantity, channel,
+            lambda etapa: update(record, message=etapa), origem=origem)
+        falhas = resultado['falhas']
+        update(record, **resultado, status='Concluído com falhas' if falhas else 'Pronto para revisão',
+               message=f"{len(resultado['arquivos'])} corte(s) de {channel} exportado(s). Revise antes de aprovar.")
+    except Exception as error:
+        logging.exception('Falha no processamento %s', channel)
+        update(record, status='Falhou', message=str(error))
 
 
 def importar_e_analisar(record, link, brief_path, channel, quantity):
@@ -205,7 +200,7 @@ class Handler(BaseHTTPRequestHandler):
             name = urllib.parse.unquote(self.path.removeprefix('/files/'))
             target = (ROOT / name).resolve()
             if not (target.is_relative_to(ROOT / 'trabalho') or
-                    (target.is_relative_to(ROOT / 'publicacoes/games') and
+                    (any(target.is_relative_to(ROOT / 'publicacoes' / c) for c in CANAIS) and
                      target.suffix in ('.txt', '.jpg', '.json', '.srt', '.ass', '.mp4'))) or not target.is_file():
                 self.send_json({'error': 'Arquivo não encontrado'}, 404)
                 return
@@ -225,7 +220,7 @@ class Handler(BaseHTTPRequestHandler):
             name = urllib.parse.unquote(self.path.removeprefix('/media/'))
             target = (ROOT / name).resolve()
             if not (target.is_relative_to(ROOT / 'trabalho/previas') or
-                    target.is_relative_to(ROOT / 'publicacoes/games')) or not target.is_file() or target.suffix != '.mp4':
+                    any(target.is_relative_to(ROOT / 'publicacoes' / c) for c in CANAIS)) or not target.is_file() or target.suffix != '.mp4':
                 self.send_json({'error': 'Prévia não encontrada'}, 404)
                 return
             self.send_response(200)
@@ -328,7 +323,7 @@ class Handler(BaseHTTPRequestHandler):
                     if job['video'] != video or corte not in job.get('arquivos', []):
                         raise ValueError('Corte indisponível para aprovação.')
                     entregas = job.get('entregas', {})
-                    entregas[corte] = {**entregas.get(corte, {}), **entregar_games(corte, redes)}
+                    entregas[corte] = {**entregas.get(corte, {}), **entregar_games(corte, redes, job['channel'])}
                     update(record, entregas=entregas)
                 self.send_json({'entregas': entregas[corte]})
             elif self.path == '/api/render':
@@ -359,6 +354,6 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     (ROOT / 'logs').mkdir(exist_ok=True)
-    logging.basicConfig(filename=ROOT / 'logs/games.log', level=logging.INFO)
+    logging.basicConfig(filename=ROOT / 'logs/studio.log', level=logging.INFO)
     print('CortesIA Studio local em http://127.0.0.1:8765')
     ThreadingHTTPServer(('127.0.0.1', 8765), Handler).serve_forever()

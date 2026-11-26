@@ -14,11 +14,13 @@ ARQUIVOS = {
 ROTULOS = {'tiktok': 'TikTok', 'youtube': 'YouTube Shorts', 'instagram': 'Instagram Reels'}
 
 
-def entregar(origem, redes):
+def entregar(origem, redes, canal='games'):
     corte = (ROOT / origem).resolve(strict=True)
-    base = ROOT / 'publicacoes/games'
+    if canal not in ('games', 'ia', 'tecnologia'):
+        raise ValueError('Canal inválido.')
+    base = ROOT / 'publicacoes' / canal
     if corte.parent.parent != base or not corte.is_file() or corte.suffix != '.mp4':
-        raise ValueError('Selecione um corte do lote Games.')
+        raise ValueError('Selecione um corte deste canal.')
     if not redes or any(rede not in REDES for rede in redes):
         raise ValueError('Selecione pelo menos uma plataforma válida.')
     meta = json.loads(corte.with_name(corte.stem + '_meta.json').read_text(encoding='utf-8'))

@@ -11,6 +11,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from cortes import ROOT, ffmpeg, gravar, legendas
+from episodios import manchete, preparar, guia
 
 MARCAS = ROOT / 'assets/marcas'
 FONTES = ROOT / 'assets/fonts'
@@ -69,7 +70,7 @@ def termos(texto):
     return set(re.findall(r'\w{3,}', texto.casefold()))
 
 
-def selecionar(frases, brief, quantidade):
+def selecionar(frases, brief, quantidade, duracao_total=None):
     palavras = [w for f in frases for w in f]
     if not palavras:
         raise ValueError('Nenhuma fala detectada. Confira o áudio da gravação.')
@@ -95,12 +96,28 @@ def selecionar(frases, brief, quantidade):
                 fim=round(bloco[-1]['fim']+.15,3), palavras=list(bloco),
                 pontuacao=round(nota,2), temas_encontrados=encontrados))
     cortes = []
-    for c in sorted(candidatos, key=lambda c: -c['pontuacao']):
+    ordenados = sorted(candidatos, key=lambda c: -c['pontuacao'])
+    duracao_total = duracao_total or palavras[-1]['fim']
+    if quantidade >= 3:
+        for ato in range(3):
+            for c in ordenados:
+                if int(3*c['inicio']/max(duracao_total, 1)) != ato:
+                    continue
+                if all(c['fim'] <= x['inicio'] or c['inicio'] >= x['fim'] for x in cortes):
+                    cortes.append(c)
+                    break
+    for c in ordenados:
+        if len(cortes) >= quantidade:
+            break
         if all(c['fim'] <= x['inicio'] or c['inicio'] >= x['fim'] for x in cortes):
             cortes.append(c)
-            if len(cortes) == quantidade:
-                break
-    return cortes
+    return sorted(cortes, key=lambda c: c['inicio'])
+
+
+
+def tempo_ass(segundos):
+    from cortes import tempo
+    return tempo(segundos)
 
 
 def ass_color(hex_color):
@@ -108,13 +125,11 @@ def ass_color(hex_color):
     return '&H00' + h[4:6] + h[2:4] + h[:2]
 
 
-def renderizar(video, pasta, marca, corte, numero, creditos, tem_audio, watermark, canal):
-    nome = f'corte_{numero:02d}'
+def renderizar(video, pasta, marca, corte, numero, creditos, tem_audio, watermark, canal, nome=None, tema=''):
+    nome = nome or f'ep{numero:02d}_corte{numero:02d}'
     inicio, fim = corte['inicio'], corte['fim']
     duracao = fim-inicio
-    gancho = ' '.join(w['texto'] for w in corte['palavras'][:8]).strip()
-    gancho = re.sub(r'[{}\\\r\n]', ' ', gancho).upper()
-    gancho = (gancho[:40].rsplit(' ',1)[0] if len(gancho)>40 else gancho) or 'DICA DE TECNOLOGIA'
+    gancho = manchete(canal, corte['palavras'], tema)
     palavras = [dict(texto=w['texto'], inicio=max(0,w['inicio']-inicio),
                      fim=min(duracao,w['fim']-inicio)) for w in corte['palavras']]
     legendas(pasta, palavras)
@@ -132,6 +147,7 @@ def renderizar(video, pasta, marca, corte, numero, creditos, tem_audio, watermar
     destaque_ass = ass_color(marca['destaque'])[4:]
     gancho_ass = r'{\c&H' + destaque_ass + '&}' + primeira + r'{\c&HFFFFFF&}' + (' ' + resto if resto else '')
     conteudo += f'Dialogue: 1,0:00:00.00,0:00:04.00,Hook,,0,0,0,,{{\\pos(98,270)}}{gancho_ass}\n'
+    conteudo += f'Dialogue: 2,0:00:00.00,{tempo_ass(duracao)},Hook,,0,0,0,,{{\\pos(98,385)\\fs30}}PARTE {numero:02d}\n'
     ass.write_text(conteudo, encoding='utf-8')
     from PIL import Image, ImageDraw
     overlay = Image.new('RGBA', (1080, 1920))
@@ -211,13 +227,13 @@ def processar(video, brief, quantidade, canal, progresso=print, origem=None, pro
         progresso('Transcrevendo localmente com tempos por palavra.')
         modelo = WhisperModel(str(ROOT/'cache/models/small'),device='cpu',compute_type='int8',
                               cpu_threads=4,local_files_only=True)
-        segmentos, _ = modelo.transcribe(str(video),word_timestamps=True,vad_filter=True)
+        segmentos, info = modelo.transcribe(str(video),word_timestamps=True,vad_filter=True)
         palavras = [dict(inicio=w.start,fim=w.end,texto=w.word.strip())
                     for s in segmentos for w in s.words or []
                     if w.end>w.start and w.word.strip()]
         frases = frases_de_palavras(palavras)
         progresso('Selecionando explicações completas e temas da pauta.')
-        cortes = selecionar(frases,brief,quantidade)
+        cortes = selecionar(frases,brief,quantidade,duracao)
         if not cortes:
             raise ValueError('Não há trecho falado completo de 35 a 58 segundos.')
         legendas(trabalho,palavras)
@@ -226,18 +242,21 @@ def processar(video, brief, quantidade, canal, progresso=print, origem=None, pro
         creditos = f'Gravação própria via OBS Studio · {marca["handle"]}'
         if origem:
             creditos = f'Fonte autorizada para edição · {origem}'
-        arquivos, falhas = [], []
+        arquivos, falhas, episodios = [], [], []
         (ROOT/'tmp').mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=ROOT/'tmp',prefix='tech-') as temp:
             for numero,corte in enumerate(cortes,1):
                 progresso(f'Renderizando corte {numero} de {len(cortes)}.')
+                nome = f'ep{numero:02d}_corte{numero:02d}'
                 try:
                     with tempfile.TemporaryDirectory(dir=temp) as trecho:
                         renderizar(video,Path(trecho),marca,corte,numero,creditos,
-                                   tem_audio,watermark,canal)
+                                   tem_audio,watermark,canal,nome,brief)
+                        titulo, ato = preparar(Path(trecho),nome,canal,corte,numero,duracao,creditos,info.language,brief)
                         for arquivo in Path(trecho).iterdir():
                             shutil.move(str(arquivo),destino/arquivo.name)
-                    arquivos.append(str((destino/f'corte_{numero:02d}.mp4').relative_to(ROOT)))
+                    arquivos.append(str((destino/(nome+'.mp4')).relative_to(ROOT)))
+                    episodios.append(dict(numero=numero,ato=ato,nome=nome,inicio=corte['inicio'],fim=corte['fim'],titulo=titulo))
                     if pronto:
                         pronto(arquivos[-1])
                 except (ValueError,OSError,subprocess.CalledProcessError):
@@ -245,7 +264,8 @@ def processar(video, brief, quantidade, canal, progresso=print, origem=None, pro
                     falhas.append(numero)
         if not arquivos:
             raise ValueError(f'Nenhum corte renderizado. Confira logs/{canal}.log.')
-        return dict(arquivos=arquivos,falhas=falhas,cortes=cortes,
+        guia(destino, episodios)
+        return dict(arquivos=arquivos,falhas=falhas,cortes=cortes,episodios=episodios,
                     destino=str(destino.relative_to(ROOT)),
                     transcript=str((trabalho/'palavras.json').relative_to(ROOT)),
                     srt=str((trabalho/'legendas.srt').relative_to(ROOT)))

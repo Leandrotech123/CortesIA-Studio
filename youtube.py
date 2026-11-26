@@ -33,7 +33,7 @@ def normalizar(link):
     raise ValueError('Cole o link de um único vídeo do YouTube.')
 
 
-def baixar(link, pasta):
+def baixar(link, pasta, mp4=False):
     url = normalizar(link)
     base = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-playlist',
             '--socket-timeout', '20', '--retries', '2']
@@ -56,9 +56,11 @@ def baixar(link, pasta):
     if duracao is not None and duracao > 14400:
         raise ValueError('O vídeo tem mais de 4 horas. Envie um trecho menor como arquivo.')
     pasta.mkdir(parents=True, exist_ok=False)
+    formato = ('bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]'
+               if mp4 else 'bv[height<=1080]+ba/b[height<=1080]')
     args = [*base, '--quiet', '--no-warnings', '--match-filters', '!is_live & duration <= 14400',
-            '--max-filesize', '10G', '-f', 'bv[height<=1080]+ba/b[height<=1080]',
-            '--merge-output-format', 'mkv', '-o', str(pasta / 'fonte.%(ext)s'), '--', url]
+            '--max-filesize', '10G', '-f', formato,
+            '--merge-output-format', 'mp4' if mp4 else 'mkv', '-o', str(pasta / 'fonte.%(ext)s'), '--', url]
     result = subprocess.run(args, capture_output=True, text=True, timeout=3600)
     arquivos = [p for p in pasta.glob('fonte.*') if p.suffix in ('.mkv', '.mp4', '.webm')]
     if result.returncode or len(arquivos) != 1:

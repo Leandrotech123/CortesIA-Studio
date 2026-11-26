@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import uuid4
 from youtube import baixar, normalizar
+from radar import buscar as buscar_radar
 
 from cortes import CANAIS, ROOT
 from games import processar as processar_games
@@ -19,16 +20,27 @@ from tech import processar as processar_tech
 from entrega_games import entregar as entregar_games
 
 STATE = ROOT / '.studio'
+RADAR_STATE = STATE / 'radar'
 LOCK = threading.Lock()
 JOBS = ThreadPoolExecutor(max_workers=1, thread_name_prefix='cortesia')
+BUSCAS = ThreadPoolExecutor(max_workers=2, thread_name_prefix='radar')
 EXTENSOES = {'.mp4', '.mov', '.mkv', '.webm', '.m4v'}
 REF_EXTENSOES = EXTENSOES | {'.png', '.jpg', '.jpeg', '.webp', '.pdf', '.txt'}
 PAGE = r'''<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CortesIA Studio</title>
 <style>
-:root{font:16px system-ui;color:#eee;background:#10131a}body{max-width:1050px;margin:35px auto;padding:0 18px}h1{font-size:2rem}p{color:#b8c0cf}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.card{background:#1a202b;border:1px solid #303949;border-radius:14px;padding:20px;margin:16px 0}label{display:block;margin:12px 0 5px}input,textarea,select,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #465267;background:#121722;color:#fff;width:100%;box-sizing:border-box}textarea{min-height:100px}button{background:#61d6b0;color:#10211c;font-weight:700;cursor:pointer;margin-top:12px}.job{border-top:1px solid #394253;padding:14px 0}.candidate{background:#121722;padding:12px;border-radius:8px;margin:8px 0}.small{font-size:.86rem;color:#b8c0cf}a{color:#74dcbc}@media(max-width:700px){.grid{grid-template-columns:1fr}}
+:root{font:16px system-ui;color:#eee;background:#10131a}body{max-width:1050px;margin:35px auto;padding:0 18px}h1{font-size:2rem}p{color:#b8c0cf}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.card{background:#1a202b;border:1px solid #303949;border-radius:14px;padding:20px;margin:16px 0}label{display:block;margin:12px 0 5px}input,textarea,select,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #465267;background:#121722;color:#fff;width:100%;box-sizing:border-box}textarea{min-height:100px}button{background:#61d6b0;color:#10211c;font-weight:700;cursor:pointer;margin-top:12px}.job{border-top:1px solid #394253;padding:14px 0}.candidate{background:#121722;padding:12px;border-radius:8px;margin:8px 0}.small{font-size:.86rem;color:#b8c0cf}a{color:#74dcbc}.abas{display:flex;gap:8px;flex-wrap:wrap}.abas button{width:auto}.aba[hidden]{display:none}.radar-result{border-top:1px solid #394253;padding:14px 0}.radar-result select{max-width:240px}@media(max-width:700px){.grid{grid-template-columns:1fr}}
 </style><body><h1>CortesIA Studio</h1><p>Seu espaço local para enviar gravações, guardar referências e preparar cortes revisáveis. Os arquivos ficam neste computador.</p>
-<div class="grid"><section class="card"><h2>Novo vídeo</h2><label>Link de um vídeo do YouTube</label><input id="youtube" type="url" placeholder="https://www.youtube.com/watch?v=…"><label><input id="youtubePermitido" type="checkbox" style="width:auto"> Posso baixar e editar este vídeo</label><label>Ou envie o arquivo gravado</label><input id="video" type="file" accept="video/*"><label>Vídeo ou imagem de referência (opcional)</label><input id="reference" type="file" accept="video/*,image/*,.pdf,.txt"><label>Canal</label><select id="channel"><option value="games">Games</option><option value="ia">IA</option><option value="tecnologia">Tecnologia</option></select><label>Referências, pauta e instruções</label><textarea id="brief" placeholder="Cole links e descreva ritmo, estilo, temas, público, idioma e o que evitar. Separe fatos e opinião."></textarea><label>Quantidade de sugestões</label><select id="quantity"><option>3</option><option>5</option><option>8</option><option>10</option></select><button onclick="startJob()">Enviar e analisar</button><div id="message" class="small"></div></section>
-<section class="card"><h2>Como usar referências</h2><p>O arquivo de referência fica separado do vídeo que será cortado e não é publicado nem usado como fonte automática de fatos. Descreva no brief o estilo que quer aproveitar. O sistema usa os termos escritos para ordenar sugestões.</p><p>Envie somente gravações suas ou com autorização. Antes de publicar, confira cortes, legendas, créditos e regras da plataforma.</p><p>Em Games, o Studio analisa a gravação própria e exporta automaticamente trechos de 1min30s a 2min, com arquivos e textos para postar. Confira as prévias antes de publicar nas redes.</p><p>Em IA e Tecnologia, o Studio exporta explicações de 35 a 58 segundos mantendo a tela inteira, com identidade da marca configurada. Revise as prévias e aprove por rede.</p><p>Para gravações longas, mantenha o computador ligado e aguarde a análise local terminar.</p></section></div>
+<nav class="abas" aria-label="Modos de trabalho"><button id="tab-envio" onclick="mostrarAba('envio')">1. Enviar Gravação Local</button><button id="tab-radar" onclick="mostrarAba('radar')">2. Radar Diário</button></nav>
+<div id="aba-envio" class="aba"><div class="grid"><section class="card"><h2>Novo vídeo</h2><label>Link de um vídeo do YouTube</label><input id="youtube" type="url" placeholder="https://www.youtube.com/watch?v=…"><label><input id="youtubePermitido" type="checkbox" style="width:auto"> Posso baixar e editar este vídeo</label><label>Ou envie o arquivo gravado</label><input id="video" type="file" accept="video/*"><label>Vídeo ou imagem de referência (opcional)</label><input id="reference" type="file" accept="video/*,image/*,.pdf,.txt"><label>Canal</label><select id="channel"><option value="games">Games</option><option value="ia">IA</option><option value="tecnologia">Tecnologia</option></select><label>Referências, pauta e instruções</label><textarea id="brief" placeholder="Cole links e descreva ritmo, estilo, temas, público, idioma e o que evitar. Separe fatos e opinião."></textarea><label>Quantidade de sugestões</label><select id="quantity"><option>3</option><option>5</option><option>8</option><option>10</option></select><label><input id="serie" type="checkbox" style="width:auto"> Série curta: episódios de 35 a 58 segundos em ordem cronológica</label><button onclick="startJob()">Enviar e analisar</button><div id="message" class="small"></div></section>
+<section class="card"><h2>Como usar referências</h2><p>O arquivo de referência fica separado do vídeo que será cortado e não é publicado nem usado como fonte automática de fatos. Descreva no brief o estilo que quer aproveitar. O sistema usa os termos escritos para ordenar sugestões.</p><p>Envie somente gravações suas ou com autorização. Antes de publicar, confira cortes, legendas, créditos e regras da plataforma.</p><p>Em Games, o Studio analisa a gravação própria e exporta automaticamente trechos de 1min30s a 2min, com arquivos e textos para postar. Confira as prévias antes de publicar nas redes.</p><p>Em IA e Tecnologia, o Studio exporta explicações de 35 a 58 segundos mantendo a tela inteira, com identidade da marca configurada. Revise as prévias e aprove por rede.</p><p>Para gravações longas, mantenha o computador ligado e aguarde a análise local terminar.</p></section></div></div>
+<div id="aba-radar" class="aba" hidden><section class="card"><h2>Radar &amp; busca na internet</h2>
+<p>Pesquise referências sem baixar vídeos. O idioma da busca não confirma o idioma do vídeo; confira a fonte. Para processar um resultado, escolha a fonte e confirme que possui direito de baixar e editar.</p>
+<label>Nicho / marca</label><select id="radar-nicho"><option value="games">Games</option><option value="ia">IA &amp; Tecnologia</option></select>
+<label>Região / idioma</label><select id="radar-regiao"><option value="br">Busca em português (BR)</option><option value="en">Busca em inglês (EN)</option><option value="ambos">Ambos (PT + EN)</option></select>
+<label>Filtro / jogo / tema específico</label><input id="radar-tema" maxlength="80" placeholder="GTA VI, GitHub, automação n8n">
+<button onclick="buscarSugestoes()">Buscar Sugestões Diárias (5 Pilares Virais)</button>
+<div id="radar-status" class="small" aria-live="polite"></div><div id="radar-results"></div>
+</section></div>
 <section class="card"><h2>Trabalhos e cortes</h2><div id="jobs">Carregando…</div></section>
 <script>
 async function startJob(){
@@ -38,7 +50,7 @@ async function startJob(){
   const autorizado=document.querySelector('#youtubePermitido').checked;
   if(link && !autorizado){msg.textContent='Confirme que pode baixar e editar este vídeo.';return}
   const data={channel:document.querySelector('#channel').value,brief:document.querySelector('#brief').value,
-    quantity:Number(document.querySelector('#quantity').value)};
+    quantity:Number(document.querySelector('#quantity').value),serie:document.querySelector('#serie').checked};
   async function enviar(file, tipo){
     const r=await fetch('/api/upload?kind='+tipo+'&name='+encodeURIComponent(file.name),{method:'PUT',body:file});
     const d=await r.json();
@@ -64,9 +76,10 @@ const arquivo = p => '/files/' + encodeURIComponent(p);
 function painelCorte(j,f,i){
   const links = j.entregas?.[f] || {};
   const prefixo = f.replace(/\.mp4$/, '');
-  return `<details class="candidate"><summary>Corte ${i+1} · ${Object.keys(links).length ? 'Aprovado' : 'Para revisão'}</summary>
+  return `<details class="candidate"><summary>${j.episodios?.[i]?'Parte '+String(i+1).padStart(2,'0')+' · '+esc(j.episodios[i].titulo):'Corte '+(i+1)} · ${Object.keys(links).length ? 'Aprovado' : 'Para revisão'}</summary>
     <video controls preload="none" playsinline poster="${arquivo(prefixo+'_capa.jpg')}" style="max-width:240px;width:100%;margin:12px 0" data-src="${media(f)}"></video>
     <p><a href="${arquivo(prefixo+'_legendas.srt')}">Legendas SRT</a> · <a href="${arquivo(prefixo+'_palavras.json')}">Transcrição por palavra</a> · <a href="${arquivo(prefixo+'_publicar.txt')}">Textos para as redes</a></p>
+    ${j.episodios?.length?`<p><a href="${arquivo(prefixo+'_roteiro.txt')}">Roteiro PT-BR revisável</a> · <a href="${arquivo(prefixo+'_base_narracao.mp4')}">Vídeo sem áudio para narrar</a> · <a href="${arquivo(f.substring(0,f.lastIndexOf('/'))+'/guia_episodios.txt')}">Guia de episódios</a></p>`:''}
     <form class="aprovar" data-job="${esc(j.video)}" data-corte="${esc(f)}">
       ${Object.entries(redes).map(([r,n])=>`<label style="display:inline-block;margin-right:14px"><input type="checkbox" name="redes" value="${r}" checked style="width:auto"> ${n}</label>`).join('')}
       <button>Aprovar e preparar arquivos</button><output aria-live="polite"></output>
@@ -95,6 +108,56 @@ document.addEventListener('submit',async e=>{
   }catch(error){out.textContent=error.message}
   finally{button.disabled=false}
 });
+function mostrarAba(aba){
+  for(const nome of ['envio','radar'])document.querySelector('#aba-'+nome).hidden=nome!==aba;
+  document.querySelector('#tab-envio').setAttribute('aria-current',aba==='envio'?'page':'false');
+  document.querySelector('#tab-radar').setAttribute('aria-current',aba==='radar'?'page':'false');
+}
+let radarId=null, radarItens=[];
+async function buscarSugestoes(){
+  const status=document.querySelector('#radar-status');
+  status.textContent='Busca iniciada. Nenhum vídeo será baixado nesta etapa.';
+  document.querySelector('#radar-results').innerHTML='';
+  try{
+    const r=await fetch('/api/radar/search',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({nicho:document.querySelector('#radar-nicho').value,
+        regiao:document.querySelector('#radar-regiao').value,tema:document.querySelector('#radar-tema').value})});
+    const d=await r.json();if(!r.ok)throw new Error(d.error);
+    radarId=d.id;await acompanharRadar();
+  }catch(e){status.textContent=e.message}
+}
+async function acompanharRadar(){
+  if(!radarId)return;
+  try{
+    const r=await fetch('/api/radar/'+radarId);const d=await r.json();if(!r.ok)throw new Error(d.error);
+    document.querySelector('#radar-status').textContent=d.message||d.status;
+    if(d.status==='Buscando'){setTimeout(acompanharRadar,3000);return}
+    radarItens=d.resultados||[];
+    document.querySelector('#radar-results').innerHTML=radarItens.length?radarItens.map((v,i)=>`
+      <article class="radar-result"><b>${esc(v.titulo)}</b><p class="small">
+      ${esc(v.canal)} · ${v.duracao?Math.round(v.duracao/60)+' min':'Duração não informada'} ·
+      ${esc(v.pilar)} · ${v.regiao==='br'?'Busca PT-BR':'Busca EN'}${v.data?' · '+esc(v.data):''}</p>
+      <a href="${esc(v.link)}" target="_blank" rel="noopener noreferrer">Abrir fonte original</a>
+      ${d.nicho==='ia'?'<label>Canal de destino</label><select id="radar-canal-'+i+'"><option value="ia">IA</option><option value="tecnologia">Tecnologia</option></select>':''}
+      <label><input type="checkbox" id="radar-direito-${i}" style="width:auto">
+      Tenho autorização para baixar e editar este vídeo</label>
+      <button onclick="processarRadar(${i})">Baixar e gerar cortes + roteiro</button></article>`).join(''):'Nenhum resultado nesta busca.';
+    if(d.avisos?.length)document.querySelector('#radar-status').textContent+=' Algumas consultas falharam; tente outro filtro se necessário.';
+  }catch(e){document.querySelector('#radar-status').textContent=e.message}
+}
+async function processarRadar(i){
+  const status=document.querySelector('#radar-status');
+  if(!document.querySelector('#radar-direito-'+i).checked){status.textContent='Confirme seu direito de baixar e editar esta fonte.';return}
+  const canal=document.querySelector('#radar-canal-'+i)?.value||'games';
+  try{
+    const r=await fetch('/api/radar/process',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:radarId,indice:i,canal,autorizado:true})});
+    const d=await r.json();if(!r.ok)throw new Error(d.error);
+    status.textContent='Vídeo escolhido. Download e processamento na fila; acompanhe em Trabalhos e cortes.';
+    await refresh(true);
+  }catch(e){status.textContent=e.message}
+}
+mostrarAba('envio');
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}refresh();setInterval(refresh,5000)
 </script></body></html>'''
 
@@ -121,13 +184,13 @@ def update(path, **values):
     provisório.replace(path)
 
 
-def run_analysis(record, path, brief_path, channel, quantity, origem=None):
+def run_analysis(record, path, brief_path, channel, quantity, origem=None, serie=False):
     update(record, status='Analisando', message='Transcrição local em andamento. O tempo depende da duração e do processador.')
     if channel == 'games':
         try:
             resultado = processar_games(
                 path, brief_path.read_text(encoding='utf-8'), quantity,
-                lambda etapa: update(record, message=etapa), origem=origem)
+                lambda etapa: update(record, message=etapa), origem=origem, serie=serie)
             falhas = resultado['falhas']
             update(record, **resultado, status='Concluído com falhas' if falhas else 'Pronto para revisão',
                    message=f"{len(resultado['arquivos'])} corte(s) exportado(s). Confira áudio, legendas e enquadramento.")
@@ -147,11 +210,11 @@ def run_analysis(record, path, brief_path, channel, quantity, origem=None):
         update(record, status='Falhou', message=str(error))
 
 
-def importar_e_analisar(record, link, brief_path, channel, quantity):
+def importar_e_analisar(record, link, brief_path, channel, quantity, radar=False, serie=False):
     update(record, status='Analisando', message='Importando vídeo do YouTube…')
     try:
-        pasta = ROOT / 'entrada' / 'youtube' / record.stem
-        arquivo = baixar(link, pasta)
+        pasta = ROOT / 'entrada' / ('radar' if radar else 'youtube') / record.stem
+        arquivo = baixar(link, pasta, mp4=radar)
         video = arquivo.with_name(record.stem + arquivo.suffix)
         arquivo.rename(video)
         update(record, video=str(video.relative_to(ROOT)))
@@ -159,7 +222,22 @@ def importar_e_analisar(record, link, brief_path, channel, quantity):
         logging.exception('Falha na importação do YouTube')
         update(record, status='Falhou', message=str(error))
         return
-    run_analysis(record, video, brief_path, channel, quantity, link)
+    origem = link
+    if radar:
+        fonte = json.loads(record.read_text(encoding='utf-8'))
+        origem = f"{fonte.get('source_channel', 'Fonte não informada')} · {link}"
+    run_analysis(record, video, brief_path, channel, quantity, origem, serie=serie)
+
+
+def executar_busca(record, nicho, regiao, tema):
+    try:
+        resultado = buscar_radar(nicho, regiao, tema,
+                                lambda mensagem: update(record, message=mensagem))
+        update(record, **resultado, status='Concluído',
+               message=f"{len(resultado['resultados'])} referências encontradas; nenhum vídeo baixado.")
+    except Exception as error:
+        logging.exception('Falha na busca Radar')
+        update(record, status='Falhou', message=str(error))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -196,6 +274,16 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif self.path == '/api/jobs':
             self.send_json({'jobs': records()})
+        elif self.path.startswith('/api/radar/'):
+            chave = self.path.removeprefix('/api/radar/')
+            if not re.fullmatch(r'[a-f0-9]{12}', chave):
+                self.send_json({'error': 'Busca inválida'}, 404)
+                return
+            registro = RADAR_STATE / (chave + '.json')
+            if not registro.is_file():
+                self.send_json({'error': 'Busca não encontrada'}, 404)
+                return
+            self.send_json(json.loads(registro.read_text(encoding='utf-8')))
         elif self.path.startswith('/files/'):
             name = urllib.parse.unquote(self.path.removeprefix('/files/'))
             target = (ROOT / name).resolve()
@@ -270,8 +358,52 @@ class Handler(BaseHTTPRequestHandler):
         try:
             size = int(self.headers.get('Content-Length', '0'))
             data = json.loads(self.rfile.read(size))
-            if self.path == '/api/analyze':
+            if self.path == '/api/radar/search':
+                nicho, regiao = data.get('nicho'), data.get('regiao')
+                tema = str(data.get('tema', ''))[:80]
+                if nicho not in ('games', 'ia') or regiao not in ('br', 'en', 'ambos'):
+                    raise ValueError('Nicho ou região inválidos.')
+                chave = uuid4().hex[:12]
+                RADAR_STATE.mkdir(parents=True, exist_ok=True)
+                registro = RADAR_STATE / (chave + '.json')
+                registro.write_text(json.dumps(dict(id=chave, nicho=nicho, regiao=regiao,
+                    tema=tema, status='Buscando', message='Iniciando busca...',
+                    resultados=[], avisos=[]), ensure_ascii=False, indent=2), encoding='utf-8')
+                BUSCAS.submit(executar_busca, registro, nicho, regiao, tema)
+                self.send_json({'id': chave, 'status': 'Buscando'})
+            elif self.path == '/api/radar/process':
+                chave = str(data.get('id', ''))
+                if not re.fullmatch(r'[a-f0-9]{12}', chave):
+                    raise ValueError('Busca inválida.')
+                registro = RADAR_STATE / (chave + '.json')
+                busca = json.loads(registro.read_text(encoding='utf-8'))
+                indice = data.get('indice')
+                if type(indice) is not int or not 0 <= indice < len(busca.get('resultados', [])):
+                    raise ValueError('Resultado inválido.')
+                if busca.get('status') != 'Concluído' or data.get('autorizado') is not True:
+                    raise ValueError('Confirme seu direito de baixar e editar este vídeo.')
+                item = busca['resultados'][indice]
+                canal = data.get('canal')
+                if canal not in (('games',) if busca['nicho'] == 'games' else ('ia', 'tecnologia')):
+                    raise ValueError('Canal de destino inválido.')
+                chave_job = 'radar-' + uuid4().hex[:12]
+                STATE.mkdir(exist_ok=True)
+                refs = ROOT / 'trabalho/referencias'
+                refs.mkdir(parents=True, exist_ok=True)
+                brief = f"{busca['tema']} · {item['pilar']} · {item['titulo']}"[:20000]
+                brief_path = refs / (chave_job + '.txt')
+                brief_path.write_text(brief, encoding='utf-8')
+                record = STATE / (chave_job + '.json')
+                record.write_text(json.dumps(dict(video=chave_job, youtube=item['link'],
+                    source_title=item['titulo'], source_channel=item['canal'],
+                    channel=canal, status='Na fila', cuts=[], brief=brief,
+                    serie=True, autorizado=True), ensure_ascii=False, indent=2), encoding='utf-8')
+                JOBS.submit(importar_e_analisar, record, item['link'], brief_path,
+                            canal, 5, True, True)
+                self.send_json({'status': 'Na fila', 'id': chave_job})
+            elif self.path == '/api/analyze':
                 channel, quantity = data.get('channel'), int(data.get('quantity', 3))
+                serie = data.get('serie') is True
                 if data.get('youtube'):
                     if data.get('autorizado') is not True:
                         raise ValueError('Confirme a autorização para baixar e editar.')
@@ -287,8 +419,8 @@ class Handler(BaseHTTPRequestHandler):
                     brief_path.write_text(brief, encoding='utf-8')
                     record = STATE / f'{chave}.json'
                     record.write_text(json.dumps(dict(video=chave, youtube=link, channel=channel,
-                        status='Na fila', cuts=[], brief=brief, reference=data.get('reference', ''))))
-                    JOBS.submit(importar_e_analisar, record, link, brief_path, channel, quantity)
+                        status='Na fila', cuts=[], brief=brief, serie=serie, reference=data.get('reference', ''))))
+                    JOBS.submit(importar_e_analisar, record, link, brief_path, channel, quantity, False, serie)
                     self.send_json({'status': 'Na fila', 'id': chave})
                     return
                 rel = Path(data['video'])
@@ -308,8 +440,8 @@ class Handler(BaseHTTPRequestHandler):
                     if record.exists() and json.loads(record.read_text()).get('status') in ('Na fila', 'Analisando'):
                         raise ValueError('Este vídeo já está sendo analisado.')
                     record.write_text(json.dumps({'video': str(rel), 'reference': data.get('reference', ''), 'channel': channel,
-                        'brief': brief, 'status': 'Na fila', 'cuts': []}, ensure_ascii=False, indent=2))
-                JOBS.submit(run_analysis, record, video, brief_path, channel, quantity)
+                        'brief': brief, 'status': 'Na fila', 'cuts': [], 'serie': serie}, ensure_ascii=False, indent=2))
+                JOBS.submit(run_analysis, record, video, brief_path, channel, quantity, serie=serie)
                 self.send_json({'status': 'Na fila'})
             elif self.path == '/api/approve':
                 video = str(data['video'])

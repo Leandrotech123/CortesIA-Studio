@@ -12,6 +12,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from cortes import ROOT, SINAIS_GAMES, ffmpeg, gravar, legendas, tempo
+from episodios import manchete, preparar, guia
 
 MARCA = ROOT / 'assets/marcas'
 FONTES = ROOT / 'assets/fonts'
@@ -108,7 +109,7 @@ def selecionar(frases, sinais, duracao, brief, quantidade, excluir=()):
             cortes.append(c)
             if len(cortes) == quantidade:
                 break
-    return cortes
+    return sorted(cortes, key=lambda c: c['inicio'])
 
 
 def posicao_ass(marca):
@@ -124,15 +125,13 @@ def posicao_ass(marca):
     )
 
 
-def renderizar(video, pasta, marca, corte, numero, creditos, tem_audio, marca_dagua):
+def renderizar(video, pasta, marca, corte, numero, creditos, tem_audio, marca_dagua, nome=None, tema=''):
     import shutil
 
-    nome = f'corte_{numero:02d}'
+    nome = nome or f'corte_{numero:02d}'
     inicio, fim = corte['inicio'], corte['fim']
     duracao = fim - inicio
-    gancho = ' '.join(w['texto'] for w in corte['palavras'][:8]).strip()
-    gancho = (gancho[:42].rsplit(' ', 1)[0] if len(gancho) > 42 else gancho) or 'Momento da partida'
-    gancho = gancho.translate(str.maketrans({'{': '(', '}': ')', '\\': '/'}))
+    gancho = manchete('games', corte['palavras'], tema)
     palavras = [dict(texto=w['texto'].upper(), inicio=w['inicio']-inicio, fim=w['fim']-inicio)
                 for w in corte['palavras']]
     legendas(pasta, palavras)
@@ -141,6 +140,8 @@ def renderizar(video, pasta, marca, corte, numero, creditos, tem_audio, marca_da
     conteudo = re.sub(r'^Style: Default,.*\n', posicao_ass(marca), conteudo, flags=re.M)
     conteudo = conteudo.replace('&H93FF49&', '&H00E6FF&')
     conteudo += f'Dialogue: 1,0:00:00.00,0:00:03.50,Hook,,0,0,0,,{{\\pos(105,260)\\fscx80}}{gancho}\n'
+    if nome.startswith('ep'):
+        conteudo += f'Dialogue: 1,0:00:00.00,{tempo(duracao)},Hook,,0,0,0,,{{\\pos(105,365)\\fs30}}PARTE {numero:02d}\n'
     ass.write_text(conteudo, encoding='utf-8')
     # A janela central mantém parte considerável do HUD e o plano de fundo preenche a tela.
     shutil.copyfile(marca_dagua, pasta / 'marca.png')
@@ -185,7 +186,7 @@ def renderizar(video, pasta, marca, corte, numero, creditos, tem_audio, marca_da
     gravar(pasta / (nome + '_meta.json'), dict(corte=corte, creditos=creditos, redes=textos))
 
 
-def processar(video, brief, quantidade, progresso=print, origem=None, anterior=None, pronto=None):
+def processar(video, brief, quantidade, progresso=print, origem=None, anterior=None, pronto=None, serie=False):
     from faster_whisper import WhisperModel
     import shutil
 
@@ -197,8 +198,9 @@ def processar(video, brief, quantidade, progresso=print, origem=None, anterior=N
     if not any(s['codec_type'] == 'video' for s in probe['streams']):
         raise ValueError('O arquivo não tem vídeo.')
     duracao = float(probe['format']['duration'])
-    if duracao < MINIMO:
-        raise ValueError('O modo Games precisa de pelo menos 1min30s de gravação.')
+    minimo = 35 if serie else MINIMO
+    if duracao < minimo:
+        raise ValueError(f'O modo Games precisa de pelo menos {minimo} segundos de gravação.')
     tem_audio = any(s['codec_type'] == 'audio' for s in probe['streams'])
     marca = json.loads((MARCA / 'games.json').read_text(encoding='utf-8'))
     marca_dagua = gerar_assets(marca)
@@ -213,14 +215,17 @@ def processar(video, brief, quantidade, progresso=print, origem=None, anterior=N
     (ROOT / 'tmp').mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(dir=ROOT / 'tmp', prefix='games-') as tmp:
         pasta = Path(tmp)
-        audio = pasta / 'audio.wav' if tem_audio else None
+        audio = pasta / 'audio.wav' if tem_audio and not serie else None
         frases = []
-        if audio:
-            progresso('Extraindo áudio localmente.')
-            ffmpeg('-i', video, '-map', '0:a:0', '-ac', 1, '-ar', 16000, audio)
+        idioma = 'não identificado'
+        if tem_audio:
+            if audio:
+                progresso('Extraindo áudio localmente.')
+                ffmpeg('-i', video, '-map', '0:a:0', '-ac', 1, '-ar', 16000, audio)
             if anterior is not None:
                 progresso('Reaproveitando a transcrição da gravação.')
                 palavras = json.loads((anterior / 'palavras.json').read_text(encoding='utf-8'))
+                idioma = json.loads((anterior / 'plano.json').read_text(encoding='utf-8')).get('idioma', idioma)
                 for palavra in palavras:
                     if not frases or frases[-1][-1]['texto'].endswith(('.', '?', '!')) or (
                             palavra['inicio'] - frases[-1][-1]['fim'] > .5):
@@ -230,34 +235,45 @@ def processar(video, brief, quantidade, progresso=print, origem=None, anterior=N
                 progresso('Transcrevendo localmente.')
                 modelo = WhisperModel(str(ROOT / 'cache/models/small'), device='cpu',
                                       compute_type='int8', cpu_threads=4, local_files_only=True)
-                segmentos, _ = modelo.transcribe(str(audio), word_timestamps=True, vad_filter=True)
+                segmentos, info = modelo.transcribe(str(video if serie else audio), word_timestamps=True, vad_filter=True)
+                idioma = info.language
                 for segmento in segmentos:
                     fala = [dict(inicio=w.start, fim=w.end, texto=w.word.strip())
                             for w in segmento.words or [] if w.end > w.start and w.word.strip()]
                     if fala:
                         frases.append(fala)
-        progresso('Medindo movimento e energia para selecionar os melhores trechos.')
+        progresso('Selecionando episódios em sequência.' if serie else 'Medindo movimento e energia para selecionar os melhores trechos.')
         excluir = ()
         if anterior is not None:
             plano_anterior = json.loads((anterior / 'plano.json').read_text(encoding='utf-8'))
             if plano_anterior['video'] != str(video.relative_to(ROOT)):
                 raise ValueError('A transcrição anterior pertence a outro vídeo.')
             excluir = plano_anterior['cortes']
-        cortes = selecionar(frases, medir(video, duracao, audio), duracao, brief, quantidade, excluir)
+        if serie:
+            from tech import frases_de_palavras, selecionar as selecionar_serie
+            palavras_todas = [w for frase in frases for w in frase]
+            cortes = selecionar_serie(frases_de_palavras(palavras_todas), brief, quantidade, duracao)
+            cortes = [c for c in cortes if all(c['fim'] <= x['inicio'] or c['inicio'] >= x['fim'] for x in excluir)]
+        else:
+            cortes = selecionar(frases, medir(video, duracao, audio), duracao, brief, quantidade, excluir)
+        cortes.sort(key=lambda c: c['inicio'])
         creditos = f'Gravação própria via OBS Studio · {marca["handle"]}'
         if origem:
             creditos = f'Fonte autorizada para edição · {origem}'
-        gravar(trabalho / 'plano.json', dict(video=str(video.relative_to(ROOT)), cortes=cortes))
+        gravar(trabalho / 'plano.json', dict(video=str(video.relative_to(ROOT)), cortes=cortes, idioma=idioma, serie=serie))
         legendas(trabalho, [w for frase in frases for w in frase])
-        arquivos, falhas = [], []
+        arquivos, falhas, episodios = [], [], []
         for numero, corte in enumerate(cortes, 1):
             progresso(f'Renderizando corte {numero} de {len(cortes)}.')
+            nome = f'ep{numero:02d}_corte{numero:02d}' if serie else f'corte_{numero:02d}'
             try:
                 with tempfile.TemporaryDirectory(dir=pasta) as trecho:
-                    renderizar(video, Path(trecho), marca, corte, numero, creditos, tem_audio, marca_dagua)
+                    renderizar(video, Path(trecho), marca, corte, numero, creditos, tem_audio, marca_dagua, nome, brief)
+                    titulo, ato = preparar(Path(trecho), nome, 'games', corte, numero, duracao, creditos, idioma, brief)
                     for arquivo in Path(trecho).iterdir():
                         shutil.move(str(arquivo), destino / arquivo.name)
-                arquivos.append(str((destino / f'corte_{numero:02d}.mp4').relative_to(ROOT)))
+                arquivos.append(str((destino / (nome + '.mp4')).relative_to(ROOT)))
+                episodios.append(dict(numero=numero, ato=ato, nome=nome, inicio=corte['inicio'], fim=corte['fim'], titulo=titulo))
                 if pronto:
                     pronto(arquivos[-1])
             except (ValueError, OSError, subprocess.CalledProcessError):
@@ -265,7 +281,8 @@ def processar(video, brief, quantidade, progresso=print, origem=None, anterior=N
                 falhas.append(numero)
         if not arquivos:
             raise ValueError('Nenhum corte renderizado. Confira logs/games.log.')
-    return dict(arquivos=arquivos, falhas=falhas, cortes=cortes,
+        guia(destino, episodios)
+    return dict(arquivos=arquivos, falhas=falhas, cortes=cortes, episodios=episodios,
                 destino=str(destino.relative_to(ROOT)),
                 transcript=str((trabalho / 'palavras.json').relative_to(ROOT)),
                 srt=str((trabalho / 'legendas.srt').relative_to(ROOT)))
